@@ -18,6 +18,7 @@ type Row = [number, string, string, string, number, string, string];
 export class ChatRoom extends DurableObject<Env> {
   private roomId = "default";
   private title = "";
+  private wordCache: string[] | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -33,6 +34,13 @@ export class ChatRoom extends DurableObject<Env> {
           ts INTEGER NOT NULL,
           namecolor TEXT NOT NULL,
           msgcolor TEXT NOT NULL
+        )`,
+      );
+      this.ctx.storage.sql.exec(
+        `CREATE TABLE IF NOT EXISTS dynamic_words (
+          word TEXT PRIMARY KEY,
+          hits INTEGER NOT NULL DEFAULT 1,
+          created_at INTEGER NOT NULL
         )`,
       );
     });
@@ -240,6 +248,25 @@ export class ChatRoom extends DurableObject<Env> {
     return Array.from(cursor.raw() as Iterable<Row>).map(([id, uid, name, text, ts, namecolor, msgcolor]) => ({
       id, uid, name, text, ts, namecolor, msgcolor,
     }));
+  }
+
+  private dynamicWords(): string[] {
+    if (this.wordCache === null) {
+      const cursor = this.ctx.storage.sql.exec("SELECT word FROM dynamic_words ORDER BY word");
+      this.wordCache = Array.from(cursor.raw() as Iterable<[string]>).map(([word]) => word);
+    }
+    return this.wordCache;
+  }
+
+  private upsertWord(word: string, hits: number): void {
+    this.ctx.storage.sql.exec(
+      `INSERT INTO dynamic_words (word, hits, created_at) VALUES (?, ?, ?)
+       ON CONFLICT(word) DO UPDATE SET hits = hits + excluded.hits`,
+      word,
+      hits,
+      Math.floor(Date.now() / 1000),
+    );
+    this.wordCache = null;
   }
 
   private lastInsertId(): number {
