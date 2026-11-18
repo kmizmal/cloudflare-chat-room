@@ -31,6 +31,26 @@ export async function reviewText(
   }
 }
 
+type DecideCfg = {
+  aiEnabled: boolean;
+  failOpen: boolean;
+  unsafeAction: "censor" | "block";
+};
+
+/** Decide the stored/broadcast text after a word-list hit and optional AI verdict. */
+export function decideCleaned(
+  raw: string,
+  hit: boolean,
+  verdict: "safe" | "unsafe" | "error",
+  cfg: DecideCfg,
+): string | null {
+  if (!hit) return raw;
+  if (!cfg.aiEnabled) return "***";
+  if (verdict === "safe") return raw;
+  if (verdict === "unsafe") return cfg.unsafeAction === "block" ? null : "***";
+  return cfg.failOpen ? "***" : null;
+}
+
 export async function extractWords(
   text: string,
   ai: AiBinding,

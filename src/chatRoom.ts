@@ -3,6 +3,7 @@ import type { Env, ConnectionState, MessageRecord, RoomUser, ServerEvent, Client
 import { serverSend } from "./types";
 import {
   filterWords,
+  mergeWords,
   normalizeMessage,
   normalizeName,
   rateLimited,
@@ -12,6 +13,8 @@ import {
   DEFAULT_NAME_COLOR,
 } from "./validation";
 import { BANWORDS } from "./banwords";
+import { MODERATION } from "./config";
+import { decideCleaned, reviewText } from "./moderation";
 
 type Row = [number, string, string, string, number, string, string];
 
@@ -79,7 +82,7 @@ export class ChatRoom extends DurableObject<Env> {
     // sanitizer: names are rendered with textContent).
     const name = filterWords(
       normalizeName(url.searchParams.get("name")) || `user_${Math.random().toString(36).slice(2, 7)}`,
-      BANWORDS,
+      mergeWords(BANWORDS, this.dynamicWords()),
     );
     const state: ConnectionState = { uid, name, joinedAt: Date.now(), recentTs: [], lastRename: 0 };
     server.serializeAttachment(state);
@@ -136,7 +139,17 @@ export class ChatRoom extends DurableObject<Env> {
         // Store the filtered text verbatim; escaping happens at every output
         // boundary (frontend uses textContent, SVG uses escapeXml). Escaping
         // here would double-encode for DOM consumers.
-        const cleaned = filterWords(raw, BANWORDS);
+        const effectiveWords = mergeWords(BANWORDS, this.dynamicWords());
+        const hit = filterWords(raw, effectiveWords) !== raw;
+        const shouldReview = MODERATION.aiEnabled && ((MODERATION.reviewMode as string) === "all" || hit);
+        const verdict = shouldReview
+          ? await reviewText(raw.slice(0, MODERATION.maxReviewChars), this.env.AI, MODERATION)
+          : "error";
+        const cleaned = decideCleaned(raw, hit, verdict, MODERATION);
+        if (cleaned === null) {
+          serverSend(ws, { type: "error", text: "消息未通过审核。" });
+          return;
+        }
         const namecolor = safeColor(event.namecolor, DEFAULT_NAME_COLOR);
         const msgcolor = safeColor(event.msgcolor, DEFAULT_MSG_COLOR);
         const ts = Math.floor(Date.now() / 1000);
@@ -170,7 +183,7 @@ export class ChatRoom extends DurableObject<Env> {
           serverSend(ws, { type: "error", text: "昵称无效。" });
           return;
         }
-        const name = filterWords(normalized, BANWORDS);
+        const name = filterWords(normalized, mergeWords(BANWORDS, this.dynamicWords()));
         const old = state.name;
         state.name = name;
         state.lastRename = now;
