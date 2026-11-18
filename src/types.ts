@@ -1,7 +1,13 @@
 import type { ChatRoom } from "./chatRoom";
 
+// Workers AI binding（workers-types 未导出 Ai 类型，用最小结构描述）。
+export type AiBinding = {
+  run(model: string, inputs: unknown): Promise<unknown>;
+};
+
 export interface Env {
   CHAT_ROOM: DurableObjectNamespace<ChatRoom>;
+  AI: AiBinding;
 }
 
 export type RoomUser = {

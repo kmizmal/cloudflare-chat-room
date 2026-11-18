@@ -55,6 +55,11 @@ export function randomUid(): string {
   return Math.random().toString(36).slice(2, 8);
 }
 
+/** Merge static and dynamic word lists, preserving first-seen order and deduplicating. */
+export function mergeWords(staticWords: readonly string[], dynamic: readonly string[]): string[] {
+  return [...new Set([...staticWords, ...dynamic])];
+}
+
 /** Longest-match-first censor with `***`, like the reference fastscan filter. */
 export function filterWords(source: string, words: readonly string[]): string {
   if (!words.length) return source;

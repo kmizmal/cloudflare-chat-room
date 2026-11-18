@@ -16,3 +16,6 @@ new_sqlite_classes = ["ChatRoom"]
 
 [observability]
 enabled = true
+
+[ai]
+binding = "AI"

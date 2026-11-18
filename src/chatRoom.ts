@@ -3,6 +3,7 @@ import type { Env, ConnectionState, MessageRecord, RoomUser, ServerEvent, Client
 import { serverSend } from "./types";
 import {
   filterWords,
+  mergeWords,
   normalizeMessage,
   normalizeName,
   rateLimited,
@@ -12,12 +13,15 @@ import {
   DEFAULT_NAME_COLOR,
 } from "./validation";
 import { BANWORDS } from "./banwords";
+import { MODERATION, REVIEW_CRON } from "./config";
+import { countWords, decideCleaned, extractWords, jitteredAlarmTime, reviewText } from "./moderation";
 
 type Row = [number, string, string, string, number, string, string];
 
 export class ChatRoom extends DurableObject<Env> {
   private roomId = "default";
   private title = "";
+  private wordCache: string[] | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -33,6 +37,13 @@ export class ChatRoom extends DurableObject<Env> {
           ts INTEGER NOT NULL,
           namecolor TEXT NOT NULL,
           msgcolor TEXT NOT NULL
+        )`,
+      );
+      this.ctx.storage.sql.exec(
+        `CREATE TABLE IF NOT EXISTS dynamic_words (
+          word TEXT PRIMARY KEY,
+          hits INTEGER NOT NULL DEFAULT 1,
+          created_at INTEGER NOT NULL
         )`,
       );
     });
@@ -71,7 +82,7 @@ export class ChatRoom extends DurableObject<Env> {
     // sanitizer: names are rendered with textContent).
     const name = filterWords(
       normalizeName(url.searchParams.get("name")) || `user_${Math.random().toString(36).slice(2, 7)}`,
-      BANWORDS,
+      mergeWords(BANWORDS, this.dynamicWords()),
     );
     const state: ConnectionState = { uid, name, joinedAt: Date.now(), recentTs: [], lastRename: 0 };
     server.serializeAttachment(state);
@@ -128,7 +139,17 @@ export class ChatRoom extends DurableObject<Env> {
         // Store the filtered text verbatim; escaping happens at every output
         // boundary (frontend uses textContent, SVG uses escapeXml). Escaping
         // here would double-encode for DOM consumers.
-        const cleaned = filterWords(raw, BANWORDS);
+        const effectiveWords = mergeWords(BANWORDS, this.dynamicWords());
+        const hit = filterWords(raw, effectiveWords) !== raw;
+        const shouldReview = MODERATION.aiEnabled && ((MODERATION.reviewMode as string) === "all" || hit);
+        const verdict = shouldReview
+          ? await reviewText(raw.slice(0, MODERATION.maxReviewChars), this.env.AI, MODERATION)
+          : "error";
+        const cleaned = decideCleaned(raw, hit, verdict, MODERATION);
+        if (cleaned === null) {
+          serverSend(ws, { type: "error", text: "消息未通过审核。" });
+          return;
+        }
         const namecolor = safeColor(event.namecolor, DEFAULT_NAME_COLOR);
         const msgcolor = safeColor(event.msgcolor, DEFAULT_MSG_COLOR);
         const ts = Math.floor(Date.now() / 1000);
@@ -146,6 +167,11 @@ export class ChatRoom extends DurableObject<Env> {
         this.ctx.storage.sql.exec(
           `DELETE FROM messages WHERE id NOT IN (SELECT id FROM messages ORDER BY id DESC LIMIT 1000)`,
         );
+        if (REVIEW_CRON.enabled && !(await this.ctx.storage.getAlarm())) {
+          await this.ctx.storage.setAlarm(
+            jitteredAlarmTime(this.roomId, 3, Date.now(), REVIEW_CRON.jitterWindowMinutes),
+          );
+        }
         const record: MessageRecord = { id, uid: state.uid, name: state.name, text: cleaned, ts, namecolor, msgcolor };
         this.broadcast({ type: "msg", message: record });
         break;
@@ -162,7 +188,7 @@ export class ChatRoom extends DurableObject<Env> {
           serverSend(ws, { type: "error", text: "昵称无效。" });
           return;
         }
-        const name = filterWords(normalized, BANWORDS);
+        const name = filterWords(normalized, mergeWords(BANWORDS, this.dynamicWords()));
         const old = state.name;
         state.name = name;
         state.lastRename = now;
@@ -178,6 +204,34 @@ export class ChatRoom extends DurableObject<Env> {
       }
       default:
         serverSend(ws, { type: "error", text: "Unknown message type." });
+    }
+  }
+
+  async alarm(): Promise<void> {
+    try {
+      const now = Date.now();
+      const since = Math.floor(now / 1000) - REVIEW_CRON.lookbackHours * 3600;
+      const cursor = this.ctx.storage.sql.exec(
+        "SELECT text FROM messages WHERE ts >= ? ORDER BY id DESC LIMIT ?",
+        since,
+        REVIEW_CRON.maxMessagesPerRoom,
+      );
+      const texts = Array.from(cursor.raw() as Iterable<[string]>).map(([text]) => text);
+      const extracted: string[] = [];
+      for (const text of texts) {
+        const verdict = await reviewText(text, this.env.AI, MODERATION);
+        if (verdict === "unsafe") {
+          extracted.push(...(await extractWords(text, this.env.AI, REVIEW_CRON)));
+        }
+      }
+      for (const [word, hits] of countWords(extracted)) {
+        if (hits >= REVIEW_CRON.minHitCount) this.upsertWord(word, hits);
+      }
+      await this.ctx.storage.setAlarm(
+        jitteredAlarmTime(this.roomId, 3, Date.now(), REVIEW_CRON.jitterWindowMinutes),
+      );
+    } catch (err) {
+      console.error("moderation alarm failed", err);
     }
   }
 
@@ -240,6 +294,25 @@ export class ChatRoom extends DurableObject<Env> {
     return Array.from(cursor.raw() as Iterable<Row>).map(([id, uid, name, text, ts, namecolor, msgcolor]) => ({
       id, uid, name, text, ts, namecolor, msgcolor,
     }));
+  }
+
+  private dynamicWords(): string[] {
+    if (this.wordCache === null) {
+      const cursor = this.ctx.storage.sql.exec("SELECT word FROM dynamic_words ORDER BY word");
+      this.wordCache = Array.from(cursor.raw() as Iterable<[string]>).map(([word]) => word);
+    }
+    return this.wordCache;
+  }
+
+  private upsertWord(word: string, hits: number): void {
+    this.ctx.storage.sql.exec(
+      `INSERT INTO dynamic_words (word, hits, created_at) VALUES (?, ?, ?)
+       ON CONFLICT(word) DO UPDATE SET hits = hits + excluded.hits`,
+      word,
+      hits,
+      Math.floor(Date.now() / 1000),
+    );
+    this.wordCache = null;
   }
 
   private lastInsertId(): number {

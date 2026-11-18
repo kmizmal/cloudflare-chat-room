@@ -13,6 +13,7 @@ import {
   MAX_NAME,
   renameCooldown,
   escapeXml,
+  mergeWords,
 } from "../src/validation.ts";
 import { record2svg, parseSvgParams } from "../src/svg.ts";
 
@@ -98,4 +99,8 @@ test("record2svg escapes message text and title", () => {
   assert.equal(svg.includes("&lt;script&gt;x&lt;/script&gt;"), true);
   assert.equal(svg.includes("<title>&lt;t&gt;</title>"), true);
   assert.equal(svg.includes("<b>n</b>"), false);
+});
+
+test("mergeWords 合并静态与动态词表并去重", () => {
+  assert.deepEqual(mergeWords(["a", "b"], ["b", "c"]), ["a", "b", "c"]);
 });
