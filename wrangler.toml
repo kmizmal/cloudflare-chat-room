@@ -1,0 +1,18 @@
+# Cloudflare Workers chat room — wrangler config
+# Docs: https://developers.cloudflare.com/workers/wrangler/configuration/
+name = "cloudflare-chat-room"
+main = "src/index.ts"
+compatibility_date = "2026-04-07"
+# Automatic WebSocket close-frame replies (web_socket_auto_reply_to_close) are
+# enabled at this compatibility date; see Cloudflare "Use WebSockets" docs.
+
+[[durable_objects.bindings]]
+name = "CHAT_ROOM"
+class_name = "ChatRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ChatRoom"]
+
+[observability]
+enabled = true
