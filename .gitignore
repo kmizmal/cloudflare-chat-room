@@ -2,3 +2,8 @@ node_modules/
 .wrangler/
 .dev.vars
 *.log
+
+# Superpowers skill scratch / isolated worktrees
+.codegraph/
+.superpowers/
+.worktrees/
