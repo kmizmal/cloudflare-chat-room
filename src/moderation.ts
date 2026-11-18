@@ -31,6 +31,27 @@ export async function reviewText(
   }
 }
 
+/** Deterministic per-room alarm time: base UTC hour + hash jitter, always in the future. */
+export function jitteredAlarmTime(roomId: string, baseUtcHour: number, now: number, jitterWindowMinutes = 120): number {
+  let hash = 0;
+  for (let i = 0; i < roomId.length; i++) hash = (hash * 31 + roomId.charCodeAt(i)) | 0;
+  const minutes = Math.abs(hash) % (jitterWindowMinutes + 1);
+  const date = new Date(now);
+  const base = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), baseUtcHour, 0, 0);
+  const withJitter = base + minutes * 60_000;
+  return withJitter <= now ? withJitter + 24 * 60 * 60_000 : withJitter;
+}
+
+/** Count word frequencies, dropping blanks, ordered by descending count. */
+export function countWords(words: string[]): Array<[string, number]> {
+  const counts = new Map<string, number>();
+  for (const w of words) {
+    if (typeof w !== "string" || w.trim() === "") continue;
+    counts.set(w, (counts.get(w) ?? 0) + 1);
+  }
+  return [...counts].sort((a, b) => b[1] - a[1]);
+}
+
 type DecideCfg = {
   aiEnabled: boolean;
   failOpen: boolean;

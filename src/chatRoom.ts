@@ -13,8 +13,8 @@ import {
   DEFAULT_NAME_COLOR,
 } from "./validation";
 import { BANWORDS } from "./banwords";
-import { MODERATION } from "./config";
-import { decideCleaned, reviewText } from "./moderation";
+import { MODERATION, REVIEW_CRON } from "./config";
+import { countWords, decideCleaned, extractWords, jitteredAlarmTime, reviewText } from "./moderation";
 
 type Row = [number, string, string, string, number, string, string];
 
@@ -167,6 +167,11 @@ export class ChatRoom extends DurableObject<Env> {
         this.ctx.storage.sql.exec(
           `DELETE FROM messages WHERE id NOT IN (SELECT id FROM messages ORDER BY id DESC LIMIT 1000)`,
         );
+        if (REVIEW_CRON.enabled && !(await this.ctx.storage.getAlarm())) {
+          await this.ctx.storage.setAlarm(
+            jitteredAlarmTime(this.roomId, 3, Date.now(), REVIEW_CRON.jitterWindowMinutes),
+          );
+        }
         const record: MessageRecord = { id, uid: state.uid, name: state.name, text: cleaned, ts, namecolor, msgcolor };
         this.broadcast({ type: "msg", message: record });
         break;
@@ -199,6 +204,34 @@ export class ChatRoom extends DurableObject<Env> {
       }
       default:
         serverSend(ws, { type: "error", text: "Unknown message type." });
+    }
+  }
+
+  async alarm(): Promise<void> {
+    try {
+      const now = Date.now();
+      const since = Math.floor(now / 1000) - REVIEW_CRON.lookbackHours * 3600;
+      const cursor = this.ctx.storage.sql.exec(
+        "SELECT text FROM messages WHERE ts >= ? ORDER BY id DESC LIMIT ?",
+        since,
+        REVIEW_CRON.maxMessagesPerRoom,
+      );
+      const texts = Array.from(cursor.raw() as Iterable<[string]>).map(([text]) => text);
+      const extracted: string[] = [];
+      for (const text of texts) {
+        const verdict = await reviewText(text, this.env.AI, MODERATION);
+        if (verdict === "unsafe") {
+          extracted.push(...(await extractWords(text, this.env.AI, REVIEW_CRON)));
+        }
+      }
+      for (const [word, hits] of countWords(extracted)) {
+        if (hits >= REVIEW_CRON.minHitCount) this.upsertWord(word, hits);
+      }
+      await this.ctx.storage.setAlarm(
+        jitteredAlarmTime(this.roomId, 3, Date.now(), REVIEW_CRON.jitterWindowMinutes),
+      );
+    } catch (err) {
+      console.error("moderation alarm failed", err);
     }
   }
 

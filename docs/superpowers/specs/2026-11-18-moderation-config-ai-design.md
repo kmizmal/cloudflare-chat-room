@@ -69,6 +69,7 @@ export const REVIEW_CRON = {
   minWordLength: 2,
   maxWordsPerRun: 20,
   minHitCount: 2,        // 至少被判违规 2 次才写入动态词表，抑制单次误判
+  jitterWindowMinutes: 120, // 各房间 alarm 按 roomId 分散的窗口
 } as const;
 ```
 
