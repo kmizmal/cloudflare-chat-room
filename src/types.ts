@@ -2,6 +2,7 @@ import type { ChatRoom } from "./chatRoom";
 
 export interface Env {
   CHAT_ROOM: DurableObjectNamespace<ChatRoom>;
+  AI: Ai;
 }
 
 export type RoomUser = {
