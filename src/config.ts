@@ -13,12 +13,13 @@ export const MODERATION = {
 } as const;
 
 export const REVIEW_CRON = {
-  enabled: true,
+  enabled: false, // 跟随 aiEnabled：默认关闭；改为 true 前必须先把 MODERATION.aiEnabled 设为 true
   lookbackHours: 24,
   maxMessagesPerRoom: 100,
   extractionModel: "@cf/meta/llama-3.1-8b-instruct",
   minWordLength: 2,
   maxWordsPerRun: 20,
   minHitCount: 2,
+  timeoutMs: 5000,
   jitterWindowMinutes: 120,
 } as const;

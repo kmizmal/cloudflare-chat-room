@@ -170,13 +170,17 @@ Durable Object 正好提供每房间一个单线程实例 + 内置 WebSocket 接
 
 所有可调参数集中在 [`src/config.ts`](src/config.ts)，**不使用 wrangler 变量或 secret**：
 
-- `MODERATION.aiEnabled` 默认 `false`（opt-in）。本地零依赖、零费用；上线前改为 `true`
-  再运行 `npm run deploy` 才会启用 AI 评审。AI 未命中词表的消息**不会**调用模型。
+- `MODERATION.aiEnabled` 默认 `false`（opt-in）。本地零依赖、零费用；上线前把
+  `MODERATION.aiEnabled` 和 `REVIEW_CRON.enabled` 都改为 `true`，再运行 `npm run deploy`
+  才会启用 AI 评审。两个开关必须一致——只开其中一个不会启用对应功能。
+  AI 未命中词表的消息**不会**调用模型。
 - Workers AI 绑定为 `env.AI`，调用 llama-guard-3-8b 判定 `safe` / `unsafe`；
   违规原文由 llama-3.1-8b-instruct 抽取新词写回每房间 SQLite 的 `dynamic_words` 表。
 - **成本与限流**：Workers AI 本地开发与线上都会访问 Cloudflare 账号并按 Neuron 计费
   （每天 10,000 Neurons 免费额度，超出需 Workers Paid）；付费文本生成模型约 20 rpm
   （标准计费）/ 50 rpm（AI Gateway 预付费）。请按实际流量评估。
+  超时用 `Promise.race` 实现，只限制等待响应时间；底层 AI 请求可能仍会被计费，
+  且 DO 输入门可能直到请求真正结束才恢复——这是当前实现的已知限制。
 - **同步阻塞**：命中词表且开启 AI 时，`webSocketMessage` 会 `await` 判定，
   该房间消息投递最多暂停 `MODERATION.timeoutMs`（默认 5 秒）。这是为"判定后才入库/广播"
   的一致性而接受的取舍；超时或调用失败时 `failOpen` 仍按词表打码。
@@ -184,7 +188,8 @@ Durable Object 正好提供每房间一个单线程实例 + 内置 WebSocket 接
 - 昵称也过合并后的静态+动态词表，但**不送 AI 评审**（保持低成本）。
 - **动态词表永久保留**（用户决策）：只增不减、无 TTL 与总量上限；误判词一旦累计到
   `minHitCount` 会永久生效。上线后请定期抽查 `/record`；如需删除，请通过
-  Durable Object 存储管理接口清空对应房间的 `dynamic_words` 表。这是运维风险，不是 bug。
+  `wrangler d1` 不适用——Cloudflare 目前没有通用的 DO SQLite 在线管理接口；应用也**没有**
+  内置删词管理端点。误判词一旦写入，只能由部署者新增一次性维护路由或重建房间数据来清除。这是运维风险，不是 bug。
 - 每个房间的定时复核用 DO alarm（非全局 cron），每天按 `roomId` 哈希在
   `jitterWindowMinutes` 窗口内抖动触发，避免所有房间同时打爆 AI 限流。alarm 扫描近
   `lookbackHours` 小时最多 `maxMessagesPerRoom` 条消息，只有被判 `unsafe` 的入库原文

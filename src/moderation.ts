@@ -5,6 +5,7 @@ type ExtractCfg = {
   extractionModel: string;
   minWordLength: number;
   maxWordsPerRun: number;
+  timeoutMs?: number;
 };
 
 function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
@@ -35,7 +36,7 @@ export async function reviewText(
 export function jitteredAlarmTime(roomId: string, baseUtcHour: number, now: number, jitterWindowMinutes = 120): number {
   let hash = 0;
   for (let i = 0; i < roomId.length; i++) hash = (hash * 31 + roomId.charCodeAt(i)) | 0;
-  const minutes = Math.abs(hash) % (jitterWindowMinutes + 1);
+  const minutes = (hash >>> 0) % (jitterWindowMinutes + 1);
   const date = new Date(now);
   const base = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), baseUtcHour, 0, 0);
   const withJitter = base + minutes * 60_000;
@@ -83,10 +84,23 @@ export async function extractWords(
       text;
     const call = ai.run(cfg.extractionModel, {
       messages: [{ role: "user", content: prompt }],
+      response_format: { type: "json_object" },
     }) as Promise<{ response?: unknown }>;
-    const result = await call;
+    const result = cfg.timeoutMs
+      ? await withTimeout(call, cfg.timeoutMs, { response: "" })
+      : await call;
     const raw = result?.response;
-    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    let parsed: unknown = raw;
+    if (typeof raw === "string") {
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        // Tolerate prose-wrapped JSON: take the first {...} block.
+        const match = raw.match(/\{[\s\S]*\}/);
+        if (!match) return [];
+        parsed = JSON.parse(match[0]);
+      }
+    }
     const words = Array.isArray((parsed as any)?.words) ? (parsed as any).words : [];
     const seen = new Set<string>();
     const out: string[] = [];

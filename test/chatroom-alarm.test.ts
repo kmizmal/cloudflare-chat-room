@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { jitteredAlarmTime, countWords } from "../src/moderation.ts";
+import { jitteredAlarmTime, countWords, extractWords } from "../src/moderation.ts";
 import { REVIEW_CRON } from "../src/config.ts";
 
 test("jitteredAlarmTime 同房间同日稳定且落在时间窗内", () => {
@@ -25,4 +25,17 @@ test("countWords 统计词频并过滤空词", () => {
     ["a", 2],
     ["b", 1],
   ]);
+});
+
+test("extractWords 在散文包裹的 JSON 中仍能抽词", async () => {
+  const ai = {
+    run: async () => ({ response: "好的，结果是：{\"words\":[\"违规词\"]} 希望有帮助。" }),
+  } as any;
+  const words = await extractWords("文本", ai, {
+    extractionModel: "m",
+    minWordLength: 2,
+    maxWordsPerRun: 5,
+    timeoutMs: 1000,
+  });
+  assert.deepEqual(words, ["违规词"]);
 });
